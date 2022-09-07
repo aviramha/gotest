@@ -63,20 +63,6 @@ unsafe extern "C" fn c_abi_syscall6_handler(
     return syscall_res;
 }
 
-/// [Naked function] 3 param version (Syscall6) for making the syscall, libc's syscall is not
-/// used here as it doesn't return the value that go expects (it does translation)
-#[naked]
-unsafe extern "C" fn syscall_3(syscall: i64, param1: i64, param2: i64, param3: i64) -> i64 {
-    asm!(
-        "mov    rax, rdi",
-        "mov    rdi, rsi",
-        "mov    rsi, rdx",
-        "mov    rdx, rcx",
-        "syscall",
-        "ret",
-        options(noreturn)
-    )
-}
 
 #[naked]
 unsafe extern "C" fn go_syscall_new_detour() {
@@ -87,46 +73,38 @@ unsafe extern "C" fn go_syscall_new_detour() {
         "mov r11, r9",
         // Save rax in r12
         "mov r12, rax",
+        // save rbx in r13
         "mov r13, rbx",
-        // Switch stack
-        // "mov    rdx, rsp", // save stack in rdx
-        // "mov    rdi, QWORD PTR fs:[0xfffffff8]", // put g in rdi
-        // "cmp    rdi, 0x0", // check if g is null
-        // "je     2f", // jump to no g flow
-        // "mov    r8, QWORD PTR [rdi+0x30]", //
-        // "mov    rsi, QWORD PTR [r8+0x50]",
-        // "cmp    rdi,rsi",
-        // "je     2f",
-        // "mov    rsi, QWORD PTR [r8]",
-        // "cmp    rdi, rsi",
-        // "je     2f",
-        // "call   go_systemstack_switch",
-        // "mov    QWORD PTR fs:[0xfffffff8], rsi",
-        // "mov    rsp, QWORD PTR [rsi+0x38]",
-        // "sub    rsp, 0x40",
-        // "and    rsp, 0xfffffffffffffff0",
-        // "mov    QWORD PTR [rsp+0x30],rdi",
-        // "mov    rdi, QWORD PTR [rdi+0x8]",
-        // "sub    rdi, rdx",
-        // new attempt at stack
-        "mov rax, QWORD PTR fs:[0xfffffff8]",
-        "mov rbx, QWORD PTR [rax + 0x30]",
-        "cmp rax, QWORD PTR [rbx + 0x50]",
-        "jz 35f",
-        "mov rdx, QWORD PTR [RBX]",
-        "cmp rax, rdx",
-        "jz 36f",
-        "call go_systemstack_switch",
-        "mov QWORD PTR FS:[0xfffffff8], RDX",
-        "mov r14, rdx",
-        "mov rbx, QWORD PTR [rdx + 0x38]",
-        "mov rsp, rbx",
+        // save rcx in r15
+        "mov r15, rcx",
+        "call enter_syscall",
+        // Save stack
+        "mov rdx, rsp",
+        "mov rdi, qword ptr FS:[0xfffffff8]",
+        "cmp rdi, 0x0",
+        "jz 1f",
+        "mov rax, qword ptr [rdi + 0x30]",
+        "mov rsi, qword ptr [rax + 0x50]",
+        "cmp rdi, rsi",
+        "jz 1f",
+        "mov rsi, qword ptr [rax]",
+        "cmp rdi, rsi",
+        "jz 1f",
+        "call gosave_systemstack_switch",
+        "mov qword ptr FS:[0xfffffff8], rsi",
+        "mov rsp, qword ptr [RSI + 0x38]",
+        "sub rsp, 0x40",
+        "and rsp, -0x10",
+        "mov qword ptr [rsp + 0x30], rdi",
+        "mov rdi, qword ptr [RDI + 0x8]",
+        "sub RDI, RDX",
+        "mov qword ptr [rsp + 0x28], rdi",
         // push the arguments of Rawsyscall from the stack to preserved registers
         "mov QWORD PTR [rsp], r11",
         "mov r9, r8",
         "mov r8, rsi",
         "mov rsi, r13",
-        "mov rdx, rcx",
+        "mov rdx, r15",
         "mov rcx, r10",
         "mov rdi, r12",
         "call c_abi_syscall6_handler",
@@ -137,15 +115,18 @@ unsafe extern "C" fn go_syscall_new_detour() {
         // "mov    QWORD PTR fs:0xfffffff8, rdi",
         // "mov    rsp, rsi",
         // Switch stack back v2
-        "mov rdi, QWORD PTR FS:[0xfffffff8]",
-        "mov rbx, QWORD PTR [rdi + 0x30]",
-        "mov rdi, QWORD PTR [rbx + 0xc0]",
-        "mov QWORD PTR FS:[0xfffffff8], rdi",
-        "mov rsp, QWORD PTR [rdi + 0x38]",
-        "mov qword ptr [rdi + 0x38], 0x0",
+        "mov rdi, qword ptr [rsp + 0x30]",
+        "mov rsi, qword ptr [rdi + 0x8]",
+        "sub rsi, qword ptr [ rsp + 0x28]",
+        "mov qword ptr fs:[0xfffffff8], rdi",
+        "mov rsp, rsi",
+        // exit syscall - it clobbers rax so we need to save it
+        "mov rbx, rax",
+        "call exit_syscall",
+        "mov rax, rbx",
         // Regular flow
         "cmp    rax, -0xfff",
-        "jbe    3f",
+        "jbe    2f",
         "neg    rax",
         "mov    rcx, rax",
         "mov    rax, -0x1",
@@ -155,7 +136,7 @@ unsafe extern "C" fn go_syscall_new_detour() {
         "ret",
         // same as `nosave` in the asmcgocall.
         // calls the abi handler, when we have no g
-        "2:",
+        "1:",
         "sub    rsp, 0x40",
         "and    rsp, -0x10",
         "mov    QWORD PTR [rsp+0x30], 0x0",
@@ -172,9 +153,13 @@ unsafe extern "C" fn go_syscall_new_detour() {
         // restore
         "mov    rsi, QWORD PTR [rsp+0x28]",
         "mov    rsp, rsi",
+        // exit syscall - it clobbers rax so we need to save it
+        "mov rbx, rax",
+        "call exit_syscall",
+        "mov rax, rbx",
         // Regular flow
         "cmp    rax, -0xfff",
-        "jbe    3f",
+        "jbe    2f",
         "neg    rax",
         "mov    rcx, rax",
         "mov    rax, -0x1",
@@ -182,20 +167,7 @@ unsafe extern "C" fn go_syscall_new_detour() {
         "xorps  xmm15, xmm15",
         "mov    r14, QWORD PTR FS:[0xfffffff8]",
         "ret",
-        // ???
-        "35:",
-        "mov QWORD PTR [rsp], r9",
-        "mov r9, r8",
-        "mov r8, rsi",
-        "mov rsi, rbx",
-        "mov rdx, rcx",
-        "mov rcx, r10",
-        "mov rdi, rax",
-        "jmp c_abi_syscall6_handler",
-        "36:",
-        "int 0x3",
-        "int3",
-        "3:",
+        "2:",
         // RAX already contains return value
         "mov    rbx, 0x0",
         "mov    rcx, 0x0",
@@ -209,7 +181,7 @@ unsafe extern "C" fn go_syscall_new_detour() {
 /// [Naked function] maps to gasave_systemstack_switch, called by asmcgocall.abi0
 #[no_mangle]
 #[naked]
-unsafe extern "C" fn go_systemstack_switch() {
+unsafe extern "C" fn gosave_systemstack_switch() {
     asm!(
         "lea    r9, [rip+0xdd9]",
         "mov    QWORD PTR [r14+0x40],r9",
@@ -232,6 +204,39 @@ unsafe extern "C" fn go_systemstack_switch() {
 #[naked]
 unsafe extern "C" fn go_runtime_abort() {
     asm!("int 0x3", "jmp go_runtime_abort", options(noreturn));
+}
+
+
+/// Clobbers rax, rcx
+#[no_mangle]
+#[naked]
+unsafe extern "C" fn enter_syscall() {
+    asm!(
+        "mov rax, qword ptr [r14 + 0x30]", // get mp
+        "inc qword ptr [ rax + 0x130 ]", // inc cgocall
+        "inc qword ptr [ rax + 0x138 ]", // inc cgo
+        "mov rcx, qword ptr [ rax + 0x140 ]",
+        "mov qword ptr [rcx], 0x0", // reset traceback
+        "mov byte ptr [ RAX + 0x118], 0x1", // incgo = true
+        "ret",
+        options(noreturn)
+    );
+}
+
+
+/// clobbers xmm15, r14, rax
+#[no_mangle]
+#[naked]
+unsafe extern "C" fn exit_syscall() {
+    asm!(
+        "xorps xmm15, xmm15",
+        "mov r14, qword ptr FS:[0xfffffff8]",
+        "mov rax, qword ptr [r14 + 0x30]",
+        "dec qword ptr [ rax + 0x138 ]", // dec cgo
+        "mov byte ptr [ RAX + 0x118], 0x0", // incgo = false
+        "ret",
+        options(noreturn)
+    );
 }
 
 #[ctor]
