@@ -1,0 +1,17 @@
+[package]
+name = "gohook"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ctor = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+frida-gum = { version = "0.8", features = ["auto-download"] }
+libc = "0.2"
+
+[lib]
+crate_type = ["cdylib"]
+
