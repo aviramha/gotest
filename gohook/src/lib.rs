@@ -73,8 +73,8 @@ unsafe extern "C" fn go_syscall_new_detour() {
         "mov r11, r9",
         // Save rax in r12
         "mov r12, rax",
-        // save rbx in r13
-        "mov r13, rbx",
+        // save rsi in r13
+        "mov r13, rsi",
         // save rcx in r15
         "mov r15, rcx",
         "call enter_syscall",
@@ -102,8 +102,8 @@ unsafe extern "C" fn go_syscall_new_detour() {
         // push the arguments of Rawsyscall from the stack to preserved registers
         "mov QWORD PTR [rsp], r11",
         "mov r9, r8",
-        "mov r8, rsi",
-        "mov rsi, r13",
+        "mov r8, r13",
+        "mov rsi, rbx",
         "mov rdx, r15",
         "mov rcx, r10",
         "mov rdi, r12",
